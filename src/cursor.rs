@@ -40,6 +40,5 @@ pub(super) fn update_cursor(
         .map(|ray| ray.origin.truncate())
     {
         cursor_coords.0 = world_position;
-        // eprintln!("World coords: {}/{}", world_position.x, world_position.y);
     }
 }
