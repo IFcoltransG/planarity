@@ -6,14 +6,20 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy = "0.11.3"
-bevy_mod_picking = "0.16.0"
-bevy_prototype_lyon = "0.9.0"
-geo = "0.26.0"
-itertools = "0.11.0"
+bevy = "0.12.0"
+bevy-inspector-egui = "0.21.0"
+bevy_egui = "0.23.0"
+bevy_mod_picking = "0.17.0"
+bevy_prototype_lyon = "0.10.0"
+bladeink = "1.0.1"
+geo = "0.27.0"
+itertools = "0.12.0"
+iyes_progress = { version = "0.10.0", features = ["assets"] }
+leafwing-input-manager = "0.11.1"
 petgraph = "0.6.4"
 rand = "0.8.5"
 tap = "1.0.1"
+thiserror = "1.0.50"
 
 [features]
 default = ["fast-compile"]

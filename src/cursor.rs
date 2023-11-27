@@ -1,21 +1,20 @@
 use bevy::{prelude::*, window::PrimaryWindow};
+
 /// We will store the world position of the mouse cursor here.
 #[derive(Resource, Default)]
-
 pub(super) struct CursorWorldCoords(pub Vec2);
 
 /// Used to help identify our main camera
 #[derive(Component)]
 pub(super) struct MainCamera;
 
+#[derive(Debug, Component)]
+pub(super) struct TrackCursor(pub bool);
 
 pub(super) fn setup_camera(mut commands: Commands) {
     commands.init_resource::<CursorWorldCoords>();
     // Make sure to add the marker component when you set up your camera
-    commands.spawn((
-        Camera2dBundle::default(),
-        MainCamera,
-    ));
+    commands.spawn((Camera2dBundle::default(), MainCamera));
 }
 
 pub(super) fn update_cursor(
@@ -40,5 +39,20 @@ pub(super) fn update_cursor(
         .map(|ray| ray.origin.truncate())
     {
         cursor_coords.0 = world_position;
+    }
+}
+
+pub(crate) fn track_cursor(
+    pointer: Res<CursorWorldCoords>,
+    mut entities: Query<(&mut Transform, &TrackCursor)>,
+) {
+    if pointer.is_changed() {
+        for (mut transform, TrackCursor(track)) in &mut entities {
+            if *track {
+                let Vec2 { x, y } = pointer.0;
+                transform.translation.x = x;
+                transform.translation.y = y;
+            }
+        }
     }
 }
