@@ -1,15 +1,21 @@
 use crate::{
-    cmp_vec, config::Cfg, fields::Field, generate::make_network, Edge, LevelCleanup, Node, Velocity,
+    cmp_vec,
+    config::Cfg,
+    fields::Field,
+    generate::{bigger_graph, make_network, PreviousGraphs},
+    Edge, LevelCleanup, Node, Velocity,
 };
-use ::bevy::{math::Vec3Swizzles, prelude::*};
-use ::bevy_prototype_lyon::prelude::*;
-use ::leafwing_input_manager::prelude::*;
+use bevy::{math::Vec3Swizzles, prelude::*};
+use bevy_prototype_lyon::prelude::*;
+use leafwing_input_manager::prelude::*;
 
 #[derive(Debug, Actionlike, Reflect, Clone, Event, PartialEq, Eq)]
 #[non_exhaustive]
 pub(crate) enum Action {
     Reset,
+    Bigger,
     MoveOutwards,
+    Size(usize, usize),
 }
 
 pub(crate) fn keyboard_action_events(
@@ -28,36 +34,43 @@ pub(crate) fn move_points_outwards(
     time: Res<Time>,
     cfg: Res<Cfg>,
 ) {
-    fn target(vec: Vec2, length: f32) -> Vec2 {
-        vec.normalize_or_zero() * (vec.length() - length)
+    // fn target(vec: Vec2, length: f32) -> Vec2 {
+    //     with_length(vec, vec.length() - length)
+    // }
+    // fn invert(vec: Vec2) -> Vec2 {
+    //     with_length(vec, 10. / vec.length().max(1.))
+    // }
+    fn invert(value: f32) -> f32 {
+        10. / value.max(1.)
+    }
+    fn with_length(vec: Vec2, length: f32) -> Vec2 {
+        vec.normalize_or_zero() * length
+    }
+    fn distance_to_circle(vec: Vec2, radius: f32) -> f32 {
+        radius - vec.length()
     }
     if actions.pressed(Action::MoveOutwards) {
-        let delta_time = time.delta_seconds();
+        let delta_time = time.delta_seconds().min(0.1);
         for (entity, mut velocity) in &mut points {
             let (transform, _) = field.nodes.get(entity).unwrap();
             let point = transform.translation.xy();
 
-            let to_nearest_point = field.points_strength_except(entity, point);
-            let to_nearest_line = field.lines_strength_except(entity, point);
+            let to_nearest_point = field.points_strength_except(entity, point, cfg.field_base);
+            let to_nearest_line = field.lines_strength_except(entity, point, cfg.field_base);
             let to_centre = field.boundary_strength(point);
-            let deflect = match &(to_nearest_line.length_squared() - 100.).max(0.) {
-                x if ((0.)..0.1).contains(x) => 256.,
-                x if ((0.)..0.5).contains(x) => 64.,
-                x if ((0.)..1.).contains(x) => 16.,
-                x if ((0.)..10.).contains(x) => 8.,
-                x if ((0.)..100.).contains(x) => 4.,
-                x if ((0.)..1000.).contains(x) => 2.,
-                _ => 1.,
-            };
+            // let target_centre = target(to_centre, cfg.target_centre_length);
             let direction = [
-                target(to_centre, cfg.target_centre_length),
-                target(-to_nearest_point, -cfg.target_point_length),
-                -to_nearest_line * deflect,
+                with_length(
+                    to_centre,
+                    invert(distance_to_circle(to_centre, cfg.target_centre_length)),
+                ),
+                with_length(-to_nearest_point, invert(to_nearest_point.length() / 2.)),
+                with_length(-to_nearest_line, invert(to_nearest_line.length())),
             ]
             .into_iter()
             .max_by(cmp_vec)
             .unwrap()
-            .clamp_length_max(1.);
+            .clamp_length_max(3.0);
             let new_velocity = delta_time * cfg.move_speed * direction;
 
             *velocity = Velocity(Some(new_velocity));
@@ -70,6 +83,7 @@ pub(crate) fn reset_network(
     mut actions: EventReader<Action>,
     level: Query<Entity, With<LevelCleanup>>,
     cfg: Res<Cfg>,
+    previous_graphs: ResMut<PreviousGraphs>,
 ) {
     for action in actions.read() {
         match action {
@@ -77,7 +91,37 @@ pub(crate) fn reset_network(
                 for entity in &level {
                     commands.get_entity(entity).unwrap().despawn();
                 }
-                return make_network(commands, cfg);
+                return make_network(commands, cfg, previous_graphs);
+            }
+            _ => {}
+        };
+    }
+}
+
+pub(crate) fn bigger_network(
+    commands: Commands,
+    mut actions: EventReader<Action>,
+    previous_graphs: ResMut<PreviousGraphs>,
+    edges: Query<Entity, With<Edge>>,
+) {
+    for action in actions.read() {
+        match action {
+            Action::Bigger => return bigger_graph(commands, previous_graphs, edges),
+            _ => {}
+        };
+    }
+}
+
+pub(crate) fn network_size(
+    mut actions: EventReader<Action>,
+    mut cfg: ResMut<Cfg>,
+) {
+    for action in actions.read() {
+        match action {
+            Action::Size(graph_size, number_of_circles) => {
+                cfg.num_circles = *number_of_circles;
+                cfg.limit_nodes = *graph_size;
+                return;
             }
             _ => {}
         };

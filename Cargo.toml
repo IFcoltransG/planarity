@@ -19,10 +19,13 @@ leafwing-input-manager = "0.11.1"
 petgraph = "0.6.4"
 rand = "0.8.5"
 tap = "1.0.1"
+tempfile = "3.8.1"
 thiserror = "1.0.50"
 
 [features]
-default = ["fast-compile"]
+default = ["fast-compile", "assets"]
+# disable this for release
+assets = ["bevy/asset_processor", "bevy/file_watcher"]
 # disable this for wasm or release
 fast-compile = ["bevy/dynamic_linking"]
 

@@ -1,72 +1,44 @@
-use std::{
-    cell::RefCell,
-    io,
-    rc::Rc,
-    str::{self, from_utf8, Utf8Error},
-};
+use std::{cell::RefCell, rc::Rc, str};
 
-use bevy::{
-    asset::{io::Reader, AssetLoader, AsyncReadExt},
-    ecs::system::SystemState,
-    prelude::*,
-    utils::BoxedFuture,
+use crate::{
+    input::Action,
+    story::story_assets::{JsonStoryAsset, StoryJson},
+    IntersectionsCount,
 };
+use bevy::{ecs::system::SystemState, prelude::*};
 use bevy_egui::{egui, EguiContexts};
-use bladeink::story::{
-    errors::{ErrorHandler, ErrorType},
-    Story,
+use bevy_inspector_egui::{inspector_options::ReflectInspectorOptions, InspectorOptions};
+use bladeink::{
+    story::{
+        errors::{ErrorHandler, ErrorType},
+        Story,
+    },
+    value_type::ValueType,
 };
+use itertools::Itertools;
 use tap::Tap;
-use thiserror::Error;
 
-#[derive(Resource)]
+pub mod story_assets;
+
+#[derive(Resource, Default, Reflect, Clone, Debug, InspectorOptions)]
+#[reflect(Resource, InspectorOptions, Default)]
 pub(crate) struct StoryOutput(pub String);
 
-#[derive(Default)]
-pub(crate) struct JsonStoryLoader;
+#[derive(Event)]
+pub(crate) struct Tag(pub String);
 
-#[derive(Error, Debug)]
-pub(crate) enum JsonStoryError {
-    #[error("Could load json: {0}")]
-    Io(#[from] io::Error),
-    #[error("Utf8 error loading json: {0}")]
-    Utf8(#[from] Utf8Error),
-}
-
-#[derive(Asset, TypePath, Debug)]
-pub(crate) struct JsonStoryAsset(String);
-
-impl AssetLoader for JsonStoryLoader {
-    type Asset = JsonStoryAsset;
-    type Error = JsonStoryError;
-    type Settings = ();
-
-    fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader,
-        _settings: &'a Self::Settings,
-        _load_context: &'a mut bevy::asset::LoadContext,
-    ) -> BoxedFuture<'a, Result<Self::Asset, Self::Error>> {
-        Box::pin(async move {
-            let mut bytes = Vec::new();
-            reader.read_to_end(&mut bytes).await?;
-            let json = from_utf8(&bytes)?;
-
-            Ok(JsonStoryAsset(json.to_owned()))
-        })
+pub(crate) fn story_needs_reload(
+    mut asset_events: EventReader<AssetEvent<JsonStoryAsset>>,
+) -> bool {
+    for event in asset_events.read() {
+        match event {
+            AssetEvent::LoadedWithDependencies { .. } => {
+                return true;
+            }
+            _ => {}
+        }
     }
-
-    fn extensions(&self) -> &[&str] {
-        &["json"]
-    }
-}
-
-#[derive(Resource)]
-pub(crate) struct StoryJson(Handle<JsonStoryAsset>);
-
-pub(crate) fn setup_story_asset(mut commands: Commands, server: Res<AssetServer>) {
-    let handle = server.load("story.json");
-    commands.insert_resource(StoryJson(handle));
+    return false;
 }
 
 pub(crate) fn setup_story(world: &mut World) {
@@ -86,22 +58,79 @@ pub(crate) fn show_story(
     mut contexts: EguiContexts,
     mut story: NonSendMut<Story>,
     mut story_output: ResMut<StoryOutput>,
+    mut tag_events: EventWriter<Tag>,
+    intersections: Res<IntersectionsCount>,
 ) {
-    egui::Window::new("Story").show(contexts.ctx_mut(), |ui| {
-        if story.can_continue() {
-            story_output.0 = story.continue_maximally().unwrap()
+    if story.can_continue() {
+        while story.can_continue() {
+            let output = &story.cont().unwrap();
+            let tags = story.get_current_tags().unwrap();
+            if tags.contains(&"CLEAR".to_string()) {
+                story_output.0.clear()
+            }
+            story_output.0.push_str(output);
+            dbg!(&story_output);
+            dbg!(&tags);
+            for tag in tags {
+                tag_events.send(Tag(tag))
+            }
         }
+    }
+    egui::Window::new("Story").show(contexts.ctx_mut(), |ui| {
         ui.label(&story_output.0);
 
         let choices = story.get_current_choices();
         for choice in choices {
             let text = &choice.text;
-            if ui.button(text.clone()).clicked() {
+            let unsolved = intersections.0 > 0 && choice.tags.contains(&"SOLVED".to_string());
+            let button = egui::Button::new(text.clone());
+            if ui.add_enabled(!unsolved, button).clicked() {
                 let index = *choice.index.borrow();
                 story.choose_choice_index(index).unwrap();
+                story_output.0.clear();
             }
         }
     });
+}
+
+pub(crate) fn log_tags(mut tag_events: EventReader<Tag>) {
+    for tag in tag_events.read() {
+        eprintln!("# {}", tag.0)
+    }
+}
+
+pub(crate) fn tag_actions(mut tag_events: EventReader<Tag>, mut actions: EventWriter<Action>) {
+    for Tag(tag) in tag_events.read() {
+        match tag.as_str() {
+            "RESET" => actions.send(Action::Reset),
+            "ADD" => actions.send(Action::Bigger),
+            string if string.starts_with("SIZE ") => {
+                if let Some((graph_size, number_of_circles)) = string
+                    .strip_prefix("SIZE ")
+                    .unwrap()
+                    .split(' ')
+                    .flat_map(str::parse)
+                    .tuples()
+                    .next()
+                {
+                    actions.send(Action::Size(graph_size, number_of_circles))
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn update_intersections(
+    mut story: NonSendMut<Story>,
+    intersections_count: Res<IntersectionsCount>,
+) {
+    story
+        .set_variable(
+            "intersections",
+            &ValueType::Int(intersections_count.0 as i32),
+        )
+        .unwrap()
 }
 
 struct Handler;

@@ -1,0 +1,10 @@
+(
+    meta_format_version: "1.0",
+    asset: Process(
+        processor: "bevy_asset::processor::process::LoadAndSave<planarity::story::story_assets::InkStoryLoader, planarity::story::story_assets::InkStorySaver>",
+        settings: (
+            loader_settings: (),
+            saver_settings: "/home/ata/repos/ink-proof/deps/inklecate_v1.1.1/inklecate",
+        ),
+    ),
+)

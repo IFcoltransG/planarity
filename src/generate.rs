@@ -1,12 +1,28 @@
-use crate::{config::Cfg, cursor::TrackCursor, Edge, Endpoint, LevelCleanup, Node, Velocity};
-use ::bevy::prelude::*;
-use ::bevy_mod_picking::prelude::*;
-use ::bevy_prototype_lyon::{prelude::*, shapes::Circle};
-use ::petgraph::prelude::*;
-use ::rand::{thread_rng, Rng};
-use ::std::f32::consts::{PI, TAU};
+use crate::{
+    config::Cfg, cursor::TrackCursor, Edge, Endpoint, LevelCleanup, LineIntersects, Node, Velocity,
+};
+use bevy::prelude::*;
+use bevy_mod_picking::prelude::*;
+use bevy_prototype_lyon::{prelude::*, shapes::Circle};
+use petgraph::{
+    prelude::*,
+    stable_graph::IndexType,
+    visit::{IntoEdgeReferences, IntoNodeReferences},
+};
+use rand::{
+    distributions::{Distribution, WeightedIndex},
+    thread_rng, Rng,
+};
+use std::f32::consts::{PI, TAU};
 
-pub(crate) fn make_network(mut commands: Commands, cfg: Res<Cfg>) {
+#[derive(Resource, Clone, Debug)]
+pub(crate) struct PreviousGraphs<N = Endpoint, E = ()>(pub Vec<StableGraph<N, E, Undirected>>);
+
+pub(crate) fn make_network(
+    mut commands: Commands,
+    cfg: Res<Cfg>,
+    mut previous_graphs: ResMut<PreviousGraphs>,
+) {
     let mut rng = thread_rng();
 
     let graph = make_graph(&mut rng, cfg.num_circles);
@@ -24,13 +40,57 @@ pub(crate) fn make_network(mut commands: Commands, cfg: Res<Cfg>) {
                 cfg.node_starting_distance
             }
     };
-    let graph = graph.map(
+    let mut graph = graph.map(
         |_, _| {
             let pos = position();
             make_endpoint(&mut commands, make_node(pos), pos)
         },
         |_, _| (),
     );
+
+    let previous_graphs = &mut previous_graphs.0;
+    previous_graphs.clear();
+    previous_graphs.reserve(graph.node_count().saturating_sub(cfg.limit_nodes));
+
+    fn degree_weighted_random(
+        graph: &StableGraph<Endpoint, (), Undirected>,
+        rng: &mut impl Rng,
+        nodes: impl Iterator<Item = NodeIndex>,
+    ) -> Option<NodeIndex> {
+        let nodes: Vec<_> = nodes.collect();
+        let weights: Vec<_> = nodes
+            .iter()
+            .map(|node| graph.neighbors(*node).count().ilog2())
+            .collect();
+        let distribution = WeightedIndex::new(weights).unwrap();
+        nodes.get(distribution.sample(rng)).copied()
+    }
+
+    while cfg.limit_nodes < graph.node_count() {
+        eprintln!("{}", graph.node_count());
+        previous_graphs.push(graph.clone());
+        let node = degree_weighted_random(
+            &graph,
+            &mut rng,
+            graph.node_references().map(|(node, _)| node),
+        )
+        .unwrap();
+        let Some(other) = degree_weighted_random(&graph, &mut rng, graph.neighbors(node)) else {
+            graph.remove_node(node).unwrap();
+            continue;
+        };
+        let Endpoint(entity, _) = graph.node_weight(other).unwrap();
+        commands
+            .entity(*entity)
+            .insert(Visibility::Hidden)
+            .remove::<Node>();
+        merge_nodes(&mut graph, node, other);
+    }
+
+    add_edges(commands, graph);
+}
+
+fn add_edges(mut commands: Commands, graph: StableGraph<Endpoint, (), Undirected>) {
     for edge in graph.edge_references() {
         let start = &graph[edge.source()];
         let end = &graph[edge.target()];
@@ -45,6 +105,8 @@ pub(crate) fn make_node(position: Vec2) -> impl Bundle {
     });
     (
         Node,
+        LineIntersects::Unsolved,
+        Name::new("Vertex"),
         LevelCleanup,
         ShapeBundle {
             path,
@@ -89,6 +151,7 @@ pub(crate) fn make_edge(
     let edge = Edge(*start, *end);
     commands.spawn((
         edge,
+        Name::new("Edge"),
         LevelCleanup,
         ShapeBundle { path, ..default() },
         Stroke::color(Color::RED),
@@ -104,7 +167,7 @@ pub(crate) fn make_endpoint(
     Endpoint(commands.spawn(bundle).id(), position)
 }
 
-fn make_graph(mut rng: impl Rng, num_circles: usize) -> UnGraph<(), ()> {
+fn make_graph(mut rng: impl Rng, num_circles: usize) -> StableUnGraph<(), ()> {
     fn sort_pair(x: usize, y: usize) -> (usize, usize) {
         (x.min(y), x.max(y))
     }
@@ -138,8 +201,52 @@ fn make_graph(mut rng: impl Rng, num_circles: usize) -> UnGraph<(), ()> {
         }
     }
     // then map graph into Entities...?
-    graph.into_graph().map(
-        |_node_index, _node_weight| (),
-        |_edge_index, _edge_weight| (),
-    )
+    graph
+        .into_graph()
+        .map(
+            |_node_index, _node_weight| (),
+            |_edge_index, _edge_weight| (),
+        )
+        .into()
+}
+
+fn merge_nodes<N, E, Ix: IndexType>(
+    graph: &mut StableGraph<N, E, Undirected, Ix>,
+    target: NodeIndex<Ix>,
+    other: NodeIndex<Ix>,
+) {
+    while let Some((edge_index, node_index)) = graph.neighbors(other).detach().next(&graph) {
+        let edge_weight = graph.remove_edge(edge_index).unwrap();
+        if target == node_index {
+            continue;
+        }
+        graph.add_edge(node_index, target, edge_weight);
+    }
+    graph.remove_node(other).unwrap();
+}
+
+fn replace_graph(
+    mut commands: Commands,
+    graph: StableGraph<Endpoint, (), Undirected>,
+    edges: Query<Entity, With<Edge>>,
+) {
+    for edge in &edges {
+        commands.entity(edge).despawn();
+    }
+    for Endpoint(entity, _) in graph.node_weights() {
+        commands
+            .entity(*entity)
+            .insert((Node, LineIntersects::Unsolved, Visibility::Inherited));
+    }
+    add_edges(commands, graph);
+}
+
+pub(crate) fn bigger_graph(
+    commands: Commands,
+    mut previous: ResMut<PreviousGraphs>,
+    edges: Query<Entity, With<Edge>>,
+) {
+    if let Some(graph) = previous.0.pop() {
+        replace_graph(commands, graph, edges);
+    }
 }
