@@ -1,3 +1,5 @@
+# [MIGRATED TO CODEBERG 2026-10-31](https://codeberg.org/IFcoltransG/planarity)
+
 # Planarity Game
 A game about moving points around so that the lines connecting them together don't overlap. In mathematical terms, it's about finding a planar embedding of a graph.
 
